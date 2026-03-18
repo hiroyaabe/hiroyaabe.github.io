@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>researchmap 業績整形ツール</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      max-width: 960px;
+      margin: 40px auto;
+      padding: 16px;
+      line-height: 1.7;
+    }
+    h1 {
+      font-size: 28px;
+      margin-bottom: 8px;
+    }
+    .desc {
+      color: #555;
+      margin-bottom: 24px;
+    }
+    .card {
+      border: 1px solid #ddd;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 20px;
+    }
+    label {
+      display: block;
+      font-weight: bold;
+      margin-top: 12px;
+      margin-bottom: 6px;
+    }
+    input[type="text"], select {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px;
+      font-size: 16px;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    .checks {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .checks label {
+      font-weight: normal;
+      margin: 0;
+    }
+    button {
+      padding: 10px 16px;
+      font-size: 16px;
+      margin-right: 8px;
+      margin-top: 16px;
+      cursor: pointer;
+    }
+    #status {
+      margin-top: 16px;
+      color: #b00020;
+      font-weight: bold;
+    }
+    #results {
+      margin-top: 24px;
+    }
+    .result-item {
+      margin-bottom: 18px;
+    }
+    .help {
+      background: #f7f7f7;
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 14px;
+      margin-top: 16px;
+    }
+    .muted {
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <h1>researchmap 業績整形ツール</h1>
+  <p class="desc">
+    researchmap ID を入れると、論文一覧を指定順で整形して表示します。
+  </p>
+
+  <div class="card">
+    <label for="researchmapId">Researchmap ID</label>
+    <input type="text" id="researchmapId" placeholder="例: 7000000000" />
+
+    <label for="orderInput">表示順</label>
+    <input
+      type="text"
+      id="orderInput"
+      value="authors$ title$ journal$ vol number$ ps pn$ date$ doi"
+    />
+
+    <div class="help">
+      使用できる要素: <code>authors title journal vol number ps pn date doi</code><br>
+      <code>$</code> = カンマを追加、<code>%</code> = 改行を追加
+    </div>
+
+    <label for="highlightName">強調したい著者名</label>
+    <input type="text" id="highlightName" placeholder="例: Taro Yamada" />
+
+    <div class="row">
+      <div>
+        <label for="sortOrder">並び順</label>
+        <select id="sortOrder">
+          <option value="desc" selected>降順</option>
+          <option value="asc">昇順</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="checks">
+      <label><input type="checkbox" id="dateParens"> 日付に括弧を追加</label>
+      <label><input type="checkbox" id="boldVolume"> Volumeを太字</label>
+      <label><input type="checkbox" id="italicJournal"> Journalを斜体</label>
+    </div>
+
+    <button id="fetchBtn">データ取得</button>
+    <button id="clearBtn">クリア</button>
+
+    <div id="status"></div>
+  </div>
+
+  <div class="card">
+    <h2>結果</h2>
+    <div id="results" class="muted">ここに結果が表示されます。</div>
+  </div>
+
+  <script>
+    const researchmapIdInput = document.getElementById("researchmapId");
+    const orderInput = document.getElementById("orderInput");
+    const highlightNameInput = document.getElementById("highlightName");
+    const dateParensCheckbox = document.getElementById("dateParens");
+    const boldCheckbox = document.getElementById("boldVolume");
+    const italicCheckbox = document.getElementById("italicJournal");
+    const sortOrderDropdown = document.getElementById("sortOrder");
+    const fetchBtn = document.getElementById("fetchBtn");
+    const clearBtn = document.getElementById("clearBtn");
+    const statusEl = document.getElementById("status");
+    const resultsEl = document.getElementById("results");
+
+    function escapeHtml(str) {
+      return String(str)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function getLocalizedField(fieldObj) {
+      if (!fieldObj) return "";
+      if (typeof fieldObj === "string") return fieldObj;
+      if (fieldObj.en && fieldObj.en.length) return fieldObj.en;
+      if (fieldObj.ja && fieldObj.ja.length) return fieldObj.ja;
+      const values = Object.values(fieldObj);
+      return values.length ? values[0] : "";
+    }
+
+    function getAuthorName(author) {
+      if (!author || typeof author !== "object") return "";
+      return Object.values(author).join("");
+    }
+
+    function formatItem(item, index, options) {
+      const authors = item.authors?.en || item.authors?.ja || [];
+      const title = getLocalizedField(item.paper_title);
+      const journal = getLocalizedField(item.publication_name);
+      const date = item.publication_date || "";
+      const vol = item.volume || "";
+      const number = item.number || "";
+      const ps = item.starting_page || "";
+      const pn = item.ending_page || "";
+      const doi = item.identifiers?.doi?.[0] || "";
+
+      if (!authors.length || !title || !journal || !date) {
+        return null;
+      }
+
+      const authorList = authors.map(author => {
+        let name = escapeHtml(getAuthorName(author));
+        if (options.highlightName && name.includes(escapeHtml(options.highlightName))) {
+          name = `<b><u>${name}</u></b>`;
+        }
+        return name;
+      });
+
+      const order = options.order.split(/\s+/).filter(Boolean);
+      const output = [`${index + 1}. `];
+      let firstElement = true;
+
+      for (let rawElement of order) {
+        let specialChar = null;
+        let element = rawElement;
+
+        if (element.endsWith("$") || element.endsWith("%")) {
+          specialChar = element.slice(-1);
+          element = element.slice(0, -1);
+        }
+
+        let part = "";
+
+        if (element === "authors") {
+          part = authorList.join(", ");
+        } else if (element === "title") {
+          part = `"${escapeHtml(title)}"`;
+        } else if (element === "journal") {
+          const j = escapeHtml(journal);
+          part = options.italic ? `<i>${j}</i>` : j;
+        } else if (element === "date") {
+          const year = escapeHtml(date.slice(0, 4));
+          part = options.dateParens ? `(${year})` : year;
+        } else if (element === "vol") {
+          if (vol) {
+            const v = escapeHtml(vol);
+            part = options.bold ? `<b>${v}</b>` : v;
+          }
+          if (number) {
+            part += `(${escapeHtml(number)})`;
+          }
+        } else if (element === "number") {
+          if (!vol && number) {
+            part = `(${escapeHtml(number)})`;
+          }
+        } else if (element === "ps") {
+          if (ps) part = escapeHtml(ps);
+        } else if (element === "pn") {
+          if (pn) part = `-${escapeHtml(pn)}`;
+        } else if (element === "doi") {
+          if (doi) {
+            const safeDoi = escapeHtml(doi);
+            part = `<a href="https://doi.org/${safeDoi}" target="_blank" rel="noopener noreferrer">https://doi.org/${safeDoi}</a>`;
+          }
+        }
+
+        if (part) {
+          if (firstElement) {
+            output.push(part);
+            firstElement = false;
+          } else {
+            if (element === "pn" && /\d$/.test(output[output.length - 1])) {
+              output[output.length - 1] += part;
+            } else {
+              output.push(part);
+            }
+          }
+
+          if (specialChar === "$") {
+            output.push(", ");
+          } else if (specialChar === "%") {
+            output.push("<br>");
+          } else {
+            output.push(" ");
+          }
+        }
+      }
+
+      return output.join("").trim();
+    }
+
+    async function fetchAndDisplayData() {
+      statusEl.textContent = "";
+      resultsEl.innerHTML = "読み込み中...";
+
+      const researchmapId = researchmapIdInput.value.trim();
+      if (!researchmapId) {
+        statusEl.textContent = "Researchmap ID を入力してください。";
+        resultsEl.innerHTML = "";
+        return;
+      }
+
+      const options = {
+        order: orderInput.value.trim(),
+        highlightName: highlightNameInput.value.trim(),
+        dateParens: dateParensCheckbox.checked,
+        bold: boldCheckbox.checked,
+        italic: italicCheckbox.checked,
+        sortOrder: sortOrderDropdown.value
+      };
+
+      const url = `https://api.researchmap.jp/${encodeURIComponent(researchmapId)}/published_papers?limit=1000`;
+
+      try {
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error("API request failed");
+        }
+
+        const jsonData = await response.json();
+
+        if (!jsonData.items || !Array.isArray(jsonData.items)) {
+          throw new Error("items not found");
+        }
+
+        const items = [...jsonData.items].sort((a, b) => {
+          const da = a.publication_date || "";
+          const db = b.publication_date || "";
+          return options.sortOrder === "desc"
+            ? db.localeCompare(da)
+            : da.localeCompare(db);
+        });
+
+        const formatted = items
+          .map((item, index) => formatItem(item, index, options))
+          .filter(Boolean);
+
+        if (!formatted.length) {
+          resultsEl.innerHTML = "表示できるデータがありませんでした。";
+          return;
+        }
+
+        resultsEl.innerHTML = formatted
+          .map(line => `<div class="result-item">${line}</div>`)
+          .join("");
+      } catch (error) {
+        statusEl.textContent = "APIリクエストに失敗しました。Researchmap ID や公開設定を確認してください。";
+        resultsEl.innerHTML = "";
+        console.error(error);
+      }
+    }
+
+    function clearInputs() {
+      researchmapIdInput.value = "";
+      orderInput.value = "authors$ title$ journal$ vol number$ ps pn$ date$ doi";
+      highlightNameInput.value = "";
+      dateParensCheckbox.checked = false;
+      boldCheckbox.checked = false;
+      italicCheckbox.checked = false;
+      sortOrderDropdown.value = "desc";
+      statusEl.textContent = "";
+      resultsEl.innerHTML = "ここに結果が表示されます。";
+    }
+
+    fetchBtn.addEventListener("click", fetchAndDisplayData);
+    clearBtn.addEventListener("click", clearInputs);
+  </script>
+</body>
+</html>
